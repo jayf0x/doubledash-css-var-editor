@@ -175,6 +175,17 @@ input[type="search"] {
   width: 24px;
   height: 22px;
   padding: 0;
+  cursor: pointer;
+  background: transparent;
+  position: relative;
+}
+
+.color::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 4px;
+  background: var(--color-preview, transparent);
 }
 
 .btn {
@@ -216,4 +227,19 @@ input[type="search"]:focus-visible,
 .color.hidden {
   visibility: hidden;
   pointer-events: none;
+}
+
+.pickr-anchor {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.pcr-app {
+  z-index: 9999;
 }

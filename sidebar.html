@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DoubleDash Editor</title>
+    <link rel="stylesheet" href="vendor/classic.min.css" />
     <link rel="stylesheet" href="sidebar.css" />
   </head>
   <body>
@@ -43,7 +44,7 @@
       <li class="row">
         <code class="name"></code>
         <div class="controls">
-          <input class="color hidden" type="color" aria-label="Pick color" />
+          <button class="color hidden" type="button" aria-label="Pick color"></button>
           <input class="text" type="text" />
           <button class="trace btn" type="button" title="Trace declaration source">📍</button>
           <button class="revert btn" type="button" title="Revert">🔄</button>
@@ -51,6 +52,9 @@
       </li>
     </template>
 
+    <button id="pickrAnchor" class="pickr-anchor" type="button" aria-hidden="true" tabindex="-1"></button>
+    <script src="color.logic.js"></script>
+    <script src="vendor/pickr.es5.min.js"></script>
     <script src="sidebar.js"></script>
   </body>
 </html>

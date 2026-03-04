@@ -5,6 +5,8 @@ const STYLE_ID = "doubledash-editor-overrides";
 const ROOT_MARKER_ATTR = "data-doubledash-editor";
 const SESSION_KEY = `doubledash:state:${tabId}`;
 const STORAGE_AREA = chrome.storage.session;
+const colorGet = typeof getColor === "function" ? getColor : () => null;
+const colorExtractVarNames = typeof extractVarNames === "function" ? extractVarNames : () => [];
 
 
 // TODO. Fix features set to false due to inaccuracy.
@@ -45,7 +47,12 @@ const state = {
   refreshTimer: null,
   loading: false,
   pageKey: "",
-  corsSkippedSheets: 0
+  corsSkippedSheets: 0,
+  resolverMap: {},
+  runtimeVarMap: {},
+  dependencyMap: new Map(),
+  visibleRows: [],
+  rowElements: new Map()
 };
 
 const els = {
@@ -58,11 +65,16 @@ const els = {
   filterButtons: Array.from(document.querySelectorAll(".filter-btn")),
   meta: document.getElementById("meta"),
   varList: document.getElementById("varList"),
-  rowTemplate: document.getElementById("rowTemplate")
+  rowTemplate: document.getElementById("rowTemplate"),
+  pickrAnchor: document.getElementById("pickrAnchor")
 };
 
 let syncDebounceTimer = null;
 let syncWaiters = [];
+let pickr = null;
+let pickrActiveRow = null;
+let pickrOpening = false;
+let pickrPendingColor = null;
 
 function fuzzyMatch(haystack, query) {
   if (!query) {
@@ -295,66 +307,6 @@ function queueSyncOverrides(delay = 100) {
   });
 }
 
-const optionStyle = new Option().style;
-
-function getColor(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (trimmed.startsWith("#")) {
-    if (trimmed.length === 4) {
-      return (
-        "#" +
-        trimmed[1] +
-        trimmed[1] +
-        trimmed[2] +
-        trimmed[2] +
-        trimmed[3] +
-        trimmed[3]
-      ).toLowerCase();
-    }
-    if (trimmed.length === 7) {
-      return trimmed.toLowerCase();
-    }
-    return null;
-  }
-
-  optionStyle.color = "";
-  optionStyle.color = trimmed;
-  const parsed = optionStyle.color;
-  if (!parsed) {
-    return null;
-  }
-
-  if (parsed.startsWith("rgb")) {
-    const rgbaMatch = parsed.match(
-      /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*(?:,\s*(\d*\.?\d+)\s*)?\)$/i
-    );
-    if (!rgbaMatch) {
-      return null;
-    }
-    const alpha = rgbaMatch[4] === undefined ? 1 : Number(rgbaMatch[4]);
-    if (!Number.isFinite(alpha) || alpha < 1) {
-      return null;
-    }
-    const [r, g, b] = rgbaMatch.slice(1, 4).map((str) => Number(str));
-    return (
-      "#" +
-      [r, g, b]
-        .map((num) => Math.max(0, Math.min(255, num)).toString(16).padStart(2, "0"))
-        .join("")
-    );
-  }
-
-  return parsed.startsWith("#") && parsed.length === 7 ? parsed.toLowerCase() : null;
-}
-
 function effectiveValue(item) {
   if (!state.localEditMode && Object.prototype.hasOwnProperty.call(state.overrides, item.name)) {
     return state.overrides[item.name];
@@ -365,12 +317,74 @@ function effectiveValue(item) {
   return state.showSelectedOnly ? item.selectedValue || "" : item.value || "";
 }
 
+function buildResolverMap(rows) {
+  const map = {};
+
+  for (const item of state.variables) {
+    let value = "";
+    if (Object.prototype.hasOwnProperty.call(state.overrides, item.name)) {
+      value = state.overrides[item.name];
+    } else if (state.localEditMode) {
+      value = item.selectedDeclaredValue || item.selectedValue || item.value || "";
+    } else if (state.showSelectedOnly) {
+      value = item.selectedValue || item.value || "";
+    } else {
+      value = item.value || "";
+    }
+
+    if (value && String(value).trim()) {
+      map[item.name] = String(value).trim();
+    }
+  }
+
+  for (const row of rows) {
+    if (row.value && String(row.value).trim()) {
+      map[row.name] = String(row.value).trim();
+    }
+  }
+
+  state.resolverMap = map;
+}
+
+function buildDependencyMap(rows) {
+  const dependencyMap = new Map();
+
+  for (const row of rows) {
+    const names = colorExtractVarNames(row.value);
+    for (const dependencyName of names) {
+      if (!dependencyMap.has(dependencyName)) {
+        dependencyMap.set(dependencyName, new Set());
+      }
+      dependencyMap.get(dependencyName).add(row.name);
+    }
+  }
+
+  state.dependencyMap = dependencyMap;
+}
+
+function resolveColorValue(value) {
+  return colorGet(value, {
+    resolveVar: (name) => {
+      const local = state.resolverMap[name];
+      if (typeof local === "string" && local.trim()) {
+        return local;
+      }
+      const runtime = state.runtimeVarMap[name];
+      if (typeof runtime === "string" && runtime.trim()) {
+        return runtime;
+      }
+      return null;
+    },
+    maxDepth: 12
+  });
+}
+
 function itemHasCategory(item, category) {
   if (category === "multiDeclared") {
     return Boolean(item.overridden);
   }
   if (category === "colors") {
-    return Boolean(item.isColor || getColor(effectiveValue(item)));
+    return Boolean(item.isColor || resolveColorValue(effectiveValue(item)));
   }
   return false;
 }
@@ -391,6 +405,7 @@ function matchesFilters(item) {
 }
 
 function getFilteredRows() {
+  buildResolverMap([]);
   const query = els.searchInput.value.trim().toLowerCase();
   const rows = [];
 
@@ -422,6 +437,25 @@ function getFilteredRows() {
   }
 
   return rows;
+}
+
+function refreshRowColorStates() {
+  for (const row of state.visibleRows) {
+    const refs = state.rowElements.get(row.name);
+    if (!refs) {
+      continue;
+    }
+    const color = resolveColorValue(row.value);
+    if (color) {
+      refs.colorButton.classList.remove("hidden");
+      refs.colorButton.style.setProperty("--color-preview", color);
+      refs.colorButton.dataset.color = color;
+    } else {
+      refs.colorButton.classList.add("hidden");
+      refs.colorButton.style.removeProperty("--color-preview");
+      delete refs.colorButton.dataset.color;
+    }
+  }
 }
 
 function setFilterButtonState(button, stateName) {
@@ -490,6 +524,7 @@ async function refreshSelectionSnapshot() {
     selectedValue: selectedValues[item.name] || "",
     selectedDeclaredValue: selectedDeclaredValues[item.name] || ""
   }));
+  state.runtimeVarMap = { ...selectedValues };
 
   persistState();
 }
@@ -686,6 +721,14 @@ async function runDeepScan() {
   state.selectionLabel = normalized.selectionLabel;
   state.pageKey = normalized.pageKey;
   state.corsSkippedSheets = normalized.corsSkippedSheets;
+  state.runtimeVarMap = state.variables.reduce((acc, item) => {
+    if (item.selectedValue) {
+      acc[item.name] = item.selectedValue;
+    } else if (item.value) {
+      acc[item.name] = item.value;
+    }
+    return acc;
+  }, {});
   persistState();
 }
 
@@ -757,6 +800,210 @@ async function applyLocalEdit(name, value) {
   }
 }
 
+async function applyRowValue(name, next, rerender) {
+  if (state.localEditMode) {
+    await applyLocalEdit(name, next);
+    if (rerender) {
+      await refreshSelectionSnapshot();
+    }
+  } else {
+    if (!next) {
+      delete state.overrides[name];
+    } else {
+      state.overrides[name] = next;
+    }
+    persistState();
+    await queueSyncOverrides(90);
+  }
+
+  if (rerender) {
+    renderVarList();
+    return;
+  }
+
+  const affectedRows = getAffectedRows(name);
+  if (affectedRows.size) {
+    for (const rowName of affectedRows) {
+      const refs = state.rowElements.get(rowName);
+      if (!refs) {
+        continue;
+      }
+      const item = state.visibleRows.find((entry) => entry.name === rowName);
+      if (!item) {
+        continue;
+      }
+      const nextEffective = rowName === name ? next : effectiveValue(item);
+      state.resolverMap[rowName] = nextEffective || "";
+      refs.textInput.title = item.selectedDeclaredValue ? "Declared on selected element" : "Inherited/Computed";
+    }
+  }
+
+  buildResolverMap(state.visibleRows);
+  refreshRowColorStates();
+}
+
+function getAffectedRows(changedName) {
+  const affected = new Set([changedName]);
+  const queue = [changedName];
+  while (queue.length) {
+    const current = queue.shift();
+    const dependents = state.dependencyMap.get(current);
+    if (!dependents) {
+      continue;
+    }
+    for (const dependent of dependents) {
+      if (!affected.has(dependent)) {
+        affected.add(dependent);
+        queue.push(dependent);
+      }
+    }
+  }
+  return affected;
+}
+
+function colorFromPickrInstance(color) {
+  if (!color) {
+    return null;
+  }
+  if (typeof color.toHEXA === "function") {
+    return color.toHEXA().toString(0).toLowerCase();
+  }
+  if (typeof color.toRGBA === "function") {
+    return color.toRGBA().toString(0);
+  }
+  return null;
+}
+
+function ensurePickr() {
+  if (pickr || !window.Pickr || !els.pickrAnchor) {
+    return;
+  }
+
+  pickr = window.Pickr.create({
+    el: "#pickrAnchor",
+    useAsButton: true,
+    theme: "classic",
+    default: "#ffffff",
+    components: {
+      preview: true,
+      opacity: true,
+      hue: true,
+      interaction: {
+        rgba: true,
+        hsla: true,
+        hex: true,
+        input: true,
+        clear: false,
+        save: false
+      }
+    }
+  });
+
+  pickr.on("init", (instance) => {
+    const app = instance?.getRoot?.()?.app;
+    if (!app) {
+      return;
+    }
+    app.addEventListener("pointerdown", (event) => event.stopPropagation());
+    app.addEventListener("click", (event) => event.stopPropagation());
+  });
+
+  pickr.on("change", (color) => {
+    if (!pickrActiveRow) {
+      return;
+    }
+
+    const next = colorFromPickrInstance(color);
+    if (!next) {
+      return;
+    }
+
+    const refs = state.rowElements.get(pickrActiveRow.name);
+    if (!refs) {
+      return;
+    }
+
+    refs.textInput.value = next;
+    refs.colorButton.style.setProperty("--color-preview", next);
+
+    pickrPendingColor = next;
+  });
+
+  pickr.on("changestop", () => {
+    if (!pickrActiveRow || !pickrPendingColor) {
+      return;
+    }
+    void applyRowValue(pickrActiveRow.name, pickrPendingColor, false);
+  });
+
+  pickr.on("save", async (color, ...r) => {
+    console.log('save', color, r)
+    return
+    if (!pickrActiveRow) {
+      pickr.hide();
+      return;
+    }
+
+    const next = colorFromPickrInstance(color);
+    if (next) {
+      const refs = state.rowElements.get(pickrActiveRow.name);
+      if (refs) {
+        refs.textInput.value = next;
+      }
+      await applyRowValue(pickrActiveRow.name, next, true);
+    }
+    pickr.hide();
+    pickrActiveRow = null;
+  });
+
+  pickr.on("clear", async () => {
+    if (!pickrActiveRow) {
+      pickr.hide();
+      return;
+    }
+    const refs = state.rowElements.get(pickrActiveRow.name);
+    if (refs) {
+      refs.textInput.value = "";
+      refs.colorButton.style.removeProperty("--color-preview");
+    }
+    await applyRowValue(pickrActiveRow.name, "", true);
+    pickr.hide();
+    pickrActiveRow = null;
+  });
+
+  pickr.on("hide", () => {
+    if (pickrOpening) {
+      return;
+    }
+    pickrPendingColor = null;
+    pickrActiveRow = null;
+  });
+}
+
+function openPickrForRow(rowName, colorButton) {
+  if (!pickr) {
+    return;
+  }
+
+  const refs = state.rowElements.get(rowName);
+  if (!refs) {
+    return;
+  }
+
+  const rect = colorButton.getBoundingClientRect();
+  els.pickrAnchor.style.left = `${Math.round(rect.left)}px`;
+  els.pickrAnchor.style.top = `${Math.round(rect.bottom + 4)}px`;
+
+  const color = resolveColorValue(refs.textInput.value) || refs.colorButton.dataset.color || "#ffffff";
+  pickrActiveRow = { name: rowName };
+  pickrOpening = true;
+  setTimeout(() => {
+    pickr.setColor(color);
+    pickr.show();
+    pickrOpening = false;
+  }, 0);
+}
+
 async function refreshScan({ deep, showLoading }) {
   try {
     if (showLoading) {
@@ -782,14 +1029,19 @@ async function refreshScan({ deep, showLoading }) {
 
 function renderVarList() {
   const rows = getFilteredRows();
+  state.visibleRows = rows;
+  buildResolverMap(rows);
+  buildDependencyMap(rows);
+  state.rowElements = new Map();
   els.varList.innerHTML = "";
 
   const templateCopy = els.rowTemplate.content.firstElementChild.cloneNode(true);
 
   for (const row of rows) {
     const node = templateCopy.cloneNode(true);
+    node.dataset.varName = row.name;
     const nameEl = node.querySelector(".name");
-    const colorInput = node.querySelector(".color");
+    const colorButton = node.querySelector(".color");
     const textInput = node.querySelector(".text");
     const traceBtn = node.querySelector(".trace");
     const revertBtn = node.querySelector(".revert");
@@ -798,52 +1050,31 @@ function renderVarList() {
     textInput.value = row.value;
     textInput.title = row.selectedDeclaredValue ? "Declared on selected element" : "Inherited/Computed";
 
-    const color = getColor(row.value);
+    state.rowElements.set(row.name, { node, colorButton, textInput });
+
+    const color = resolveColorValue(row.value);
     if (color) {
-      colorInput.classList.remove("hidden");
-      colorInput.value = color;
-      colorInput.addEventListener("input", async (event) => {
-        const next = event.target.value;
-        textInput.value = next;
-        try {
-          if (state.localEditMode) {
-            await applyLocalEdit(row.name, next);
-            await refreshSelectionSnapshot();
-            renderVarList();
-          } else {
-            state.overrides[row.name] = next;
-            persistState();
-            await queueSyncOverrides(90);
-          }
-        } catch (error) {
-          setError(error?.message || String(error));
-        }
+      colorButton.classList.remove("hidden");
+      colorButton.style.setProperty("--color-preview", color);
+      colorButton.dataset.color = color;
+      colorButton.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+      });
+      colorButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openPickrForRow(row.name, colorButton);
       });
     } else {
-      colorInput.classList.add("hidden");
+      colorButton.classList.add("hidden");
+      colorButton.style.removeProperty("--color-preview");
+      delete colorButton.dataset.color;
     }
 
     let applyTimer = null;
     const applyCurrentInput = async (rerender) => {
       const next = textInput.value.trim();
       try {
-        if (state.localEditMode) {
-          await applyLocalEdit(row.name, next);
-          if (rerender) {
-            await refreshSelectionSnapshot();
-          }
-        } else {
-          if (!next) {
-            delete state.overrides[row.name];
-          } else {
-            state.overrides[row.name] = next;
-          }
-          persistState();
-          await queueSyncOverrides(90);
-        }
-        if (rerender) {
-          renderVarList();
-        }
+        await applyRowValue(row.name, next, rerender);
       } catch (error) {
         setError(error?.message || String(error));
       }
@@ -873,15 +1104,7 @@ function renderVarList() {
 
     revertBtn.addEventListener("click", async () => {
       try {
-        if (state.localEditMode) {
-          await applyLocalEdit(row.name, "");
-          await refreshSelectionSnapshot();
-        } else {
-          delete state.overrides[row.name];
-          persistState();
-          await syncOverridesToInspectedPage();
-        }
-        renderVarList();
+        await applyRowValue(row.name, "", true);
       } catch (error) {
         setError(error?.message || String(error));
       }
@@ -890,6 +1113,7 @@ function renderVarList() {
     els.varList.appendChild(node);
   }
 
+  refreshRowColorStates();
   updateMeta(rows.length);
 }
 
@@ -1050,6 +1274,7 @@ async function ensureFreshData() {
 
 async function init() {
   applyTheme();
+  ensurePickr();
   bindEvents();
 
   if (!Number.isInteger(tabId)) {

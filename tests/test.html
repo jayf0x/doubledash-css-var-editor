@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Color Logic Harness</title>
+    <style>
+      :root {
+        --bgColor-default: #161b22;
+        --label-auburn-bgColor-rest: #2a1200;
+        --label-auburn-fgColor-rest: #f8c99b;
+        --accent: #388bfd1a;
+      }
+
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        margin: 20px;
+        line-height: 1.4;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(240px, 1fr));
+        gap: 8px 12px;
+        margin-bottom: 16px;
+      }
+
+      .control {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .control label {
+        white-space: nowrap;
+      }
+
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        border: 1px solid #bbb;
+        border-radius: 6px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border: 1px solid #ddd;
+        padding: 6px 8px;
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        background: #f5f5f5;
+      }
+
+      .swatch {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        border: 1px solid #888;
+        border-radius: 4px;
+        vertical-align: middle;
+        margin-right: 8px;
+      }
+
+      .ok {
+        color: #0a7a31;
+        font-weight: 600;
+      }
+
+      .fail {
+        color: #b11b1b;
+        font-weight: 600;
+      }
+
+      .footer {
+        margin-top: 10px;
+      }
+
+      .picker-demo {
+        margin-top: 18px;
+        padding-top: 12px;
+        border-top: 1px solid #ddd;
+      }
+
+      .picker-swatch {
+        width: 26px;
+        height: 26px;
+        border: 1px solid #888;
+        border-radius: 6px;
+        background: var(--demo-color, #388bfd);
+        cursor: pointer;
+      }
+
+      .picker-status {
+        margin-top: 8px;
+      }
+
+      .pickr-anchor {
+        position: fixed;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+    <link rel="stylesheet" href="../vendor/classic.min.css" />
+  </head>
+  <body>
+    <h1>Color Logic Harness</h1>
+
+    <div class="controls" id="varControls"></div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Input</th>
+          <th>Resolved</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="results"></tbody>
+    </table>
+
+    <div class="footer" id="summary"></div>
+    <section class="picker-demo">
+      <h2>Shared Pickr Demo</h2>
+      <button id="pickerSwatch" class="picker-swatch" aria-label="Open color picker"></button>
+      <button id="pickrAnchor" class="pickr-anchor" type="button" aria-hidden="true" tabindex="-1"></button>
+      <div class="picker-status" id="pickerStatus"></div>
+    </section>
+
+    <script src="../color.logic.js"></script>
+    <script src="../vendor/pickr.es5.min.js"></script>
+    <script>
+      const varState = {
+        "--bgColor-default": "#161b22",
+        "--label-auburn-bgColor-rest": "#2a1200",
+        "--label-auburn-fgColor-rest": "#f8c99b",
+        "--a": "var(--b)",
+        "--b": "#112233",
+        "--cycle-a": "var(--cycle-b)",
+        "--cycle-b": "var(--cycle-a)"
+      };
+
+      const cases = [
+        "#3d444d",
+        "#ffa657",
+        "#161b22",
+        "#161b2200",
+        "#656c7633",
+        "#0000",
+        "#2ea04326",
+        "#3fb9504d",
+        "#2ea04366",
+        "#f851491a",
+        "#f851494d",
+        "#f8514966",
+        "#f0f6fc",
+        "#151b23",
+        "var(--bgColor-default)",
+        "#388bfd1a",
+        "#151b23f2",
+        "#656c76",
+        "#ffffffb3",
+        "#d2992266",
+        "var(--label-auburn-bgColor-rest)",
+        "var(--label-auburn-fgColor-rest)",
+        "var(--a)",
+        "var(--missing, #445566)",
+        "var(--cycle-a)"
+      ];
+
+      function resolveVar(name) {
+        if (Object.prototype.hasOwnProperty.call(varState, name)) {
+          return varState[name];
+        }
+        const fromCss = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return fromCss || null;
+      }
+
+      function renderControls() {
+        const host = document.getElementById("varControls");
+        host.innerHTML = "";
+
+        for (const name of Object.keys(varState)) {
+          const wrap = document.createElement("div");
+          wrap.className = "control";
+
+          const label = document.createElement("label");
+          label.htmlFor = `input-${name}`;
+          label.textContent = name;
+
+          const input = document.createElement("input");
+          input.id = `input-${name}`;
+          input.value = varState[name];
+          input.addEventListener("input", () => {
+            varState[name] = input.value.trim();
+            renderResults();
+          });
+
+          wrap.appendChild(label);
+          wrap.appendChild(input);
+          host.appendChild(wrap);
+        }
+      }
+
+      function renderResults() {
+        const tbody = document.getElementById("results");
+        tbody.innerHTML = "";
+
+        let passCount = 0;
+
+        for (const input of cases) {
+          const resolved = getColor(input, { resolveVar, maxDepth: 12 });
+          const isExpectedNull = input === "var(--cycle-a)";
+          const passed = isExpectedNull ? resolved === null : resolved !== null;
+          if (passed) {
+            passCount += 1;
+          }
+
+          const tr = document.createElement("tr");
+
+          const inputCell = document.createElement("td");
+          inputCell.textContent = input;
+
+          const resolvedCell = document.createElement("td");
+          if (resolved) {
+            const swatch = document.createElement("span");
+            swatch.className = "swatch";
+            swatch.style.background = resolved;
+            resolvedCell.appendChild(swatch);
+          }
+          const valueText = document.createElement("span");
+          valueText.textContent = resolved === null ? "null" : resolved;
+          resolvedCell.appendChild(valueText);
+
+          const statusCell = document.createElement("td");
+          statusCell.textContent = passed ? "PASS" : "FAIL";
+          statusCell.className = passed ? "ok" : "fail";
+
+          tr.appendChild(inputCell);
+          tr.appendChild(resolvedCell);
+          tr.appendChild(statusCell);
+          tbody.appendChild(tr);
+        }
+
+        const summary = document.getElementById("summary");
+        const total = cases.length;
+        const failed = total - passCount;
+        summary.textContent = `Passed ${passCount}/${total} (${failed} failed)`;
+        summary.className = failed === 0 ? "footer ok" : "footer fail";
+      }
+
+      function setupPickrDemo() {
+        const swatch = document.getElementById("pickerSwatch");
+        const anchor = document.getElementById("pickrAnchor");
+        const status = document.getElementById("pickerStatus");
+
+        let opening = false;
+
+        const pickr = Pickr.create({
+          el: "#pickrAnchor",
+          useAsButton: true,
+          theme: "classic",
+          default: "#388bfd",
+          components: {
+            preview: true,
+            opacity: true,
+            hue: true,
+            interaction: {
+              rgba: true,
+              hsla: true,
+              hex: true,
+              input: true,
+              clear: true,
+              save: true
+            }
+          }
+        });
+
+        pickr.on("init", (instance) => {
+          const app = instance?.getRoot?.()?.app;
+          if (!app) {
+            return;
+          }
+          app.addEventListener("pointerdown", (event) => event.stopPropagation());
+          app.addEventListener("click", (event) => event.stopPropagation());
+        });
+
+        pickr.on("change", (color) => {
+          const next = color.toHEXA().toString(0).toLowerCase();
+          swatch.style.setProperty("--demo-color", next);
+          status.textContent = `Change: ${next}`;
+        });
+
+        pickr.on("save", (color) => {
+          const next = color ? color.toHEXA().toString(0).toLowerCase() : "(cleared)";
+          status.textContent = `Saved: ${next}`;
+          pickr.hide();
+        });
+
+        pickr.on("hide", () => {
+          if (opening) {
+            return;
+          }
+          status.textContent += " | hidden";
+        });
+
+        swatch.addEventListener("pointerdown", (event) => {
+          event.stopPropagation();
+        });
+
+        swatch.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const rect = swatch.getBoundingClientRect();
+          anchor.style.left = `${Math.round(rect.left)}px`;
+          anchor.style.top = `${Math.round(rect.bottom + 4)}px`;
+          opening = true;
+          setTimeout(() => {
+            pickr.setColor(getComputedStyle(swatch).getPropertyValue("--demo-color").trim() || "#388bfd");
+            pickr.show();
+            opening = false;
+            status.textContent = "Opened";
+          }, 0);
+        });
+      }
+
+      renderControls();
+      renderResults();
+      setupPickrDemo();
+    </script>
+  </body>
+</html>
