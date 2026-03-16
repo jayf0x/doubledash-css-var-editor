@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DoubleDash Editor",
   "description": "DevTools CSS variable editor for fast live overrides.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "permissions": ["clipboardWrite", "scripting", "storage"],
   "devtools_page": "devtools.html",
   "icons": {

@@ -52,7 +52,8 @@ const state = {
   runtimeVarMap: {},
   dependencyMap: new Map(),
   visibleRows: [],
-  rowElements: new Map()
+  rowElements: new Map(),
+  lastRenderKey: ""
 };
 
 const els = {
@@ -75,6 +76,7 @@ let pickr = null;
 let pickrActiveRow = null;
 let pickrOpening = false;
 let pickrPendingColor = null;
+let pickrApplyTimer = null;
 
 function fuzzyMatch(haystack, query) {
   if (!query) {
@@ -801,6 +803,11 @@ async function applyLocalEdit(name, value) {
 }
 
 async function applyRowValue(name, next, rerender) {
+  const targetRow = state.visibleRows.find((entry) => entry.name === name);
+  if (targetRow) {
+    targetRow.value = next;
+  }
+
   if (state.localEditMode) {
     await applyLocalEdit(name, next);
     if (rerender) {
@@ -839,6 +846,7 @@ async function applyRowValue(name, next, rerender) {
   }
 
   buildResolverMap(state.visibleRows);
+  buildDependencyMap(state.visibleRows);
   refreshRowColorStates();
 }
 
@@ -927,6 +935,14 @@ function ensurePickr() {
     refs.colorButton.style.setProperty("--color-preview", next);
 
     pickrPendingColor = next;
+
+    clearTimeout(pickrApplyTimer);
+    pickrApplyTimer = setTimeout(() => {
+      if (!pickrActiveRow || !pickrPendingColor) {
+        return;
+      }
+      void applyRowValue(pickrActiveRow.name, pickrPendingColor, false);
+    }, 120);
   });
 
   pickr.on("changestop", () => {
@@ -938,11 +954,15 @@ function ensurePickr() {
 
   pickr.on("show", () => {
     pickrPendingColor = null;
+    clearTimeout(pickrApplyTimer);
   });
 
   pickr.on("hide", () => {
     if (pickrOpening) {
       return;
+    }
+    if (pickrActiveRow && pickrPendingColor) {
+      void applyRowValue(pickrActiveRow.name, pickrPendingColor, false);
     }
     pickrPendingColor = null;
     pickrActiveRow = null;
@@ -997,8 +1017,38 @@ async function refreshScan({ deep, showLoading }) {
   }
 }
 
+function buildRenderKey() {
+  const query = els.searchInput.value.trim().toLowerCase();
+  const filterStates = FILTER_ORDER.map((key) => `${key}:${state.filterStates[key] || "off"}`).join("|");
+  return [
+    `q:${query}`,
+    `filters:${filterStates}`,
+    `selected:${state.showSelectedOnly ? "1" : "0"}`,
+    `local:${state.localEditMode ? "1" : "0"}`
+  ].join(";");
+}
+
+function scrollListToTop() {
+  const list = els.varList;
+  if (!list) {
+    return;
+  }
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion || typeof list.scrollTo !== "function") {
+    list.scrollTop = 0;
+    return;
+  }
+  list.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 function renderVarList(options = {}) {
   const { resetScroll = false } = options;
+  const renderKey = buildRenderKey();
+  const shouldResetScroll = resetScroll || renderKey !== state.lastRenderKey;
+  const shouldBlur = shouldResetScroll && document.activeElement && els.varList.contains(document.activeElement);
+  if (shouldBlur) {
+    document.activeElement.blur();
+  }
   const rows = getFilteredRows();
   state.visibleRows = rows;
   buildResolverMap(rows);
@@ -1087,9 +1137,11 @@ function renderVarList(options = {}) {
   refreshRowColorStates();
   updateMeta(rows.length);
 
-  if (resetScroll) {
-    els.varList.scrollTop = 0;
+  if (shouldResetScroll) {
+    scrollListToTop();
   }
+
+  state.lastRenderKey = renderKey;
 }
 
 function updateMeta(visibleCount) {
