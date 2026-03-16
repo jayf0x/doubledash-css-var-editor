@@ -936,39 +936,8 @@ function ensurePickr() {
     void applyRowValue(pickrActiveRow.name, pickrPendingColor, false);
   });
 
-  pickr.on("save", async (color, ...r) => {
-    console.log('save', color, r)
-    return
-    if (!pickrActiveRow) {
-      pickr.hide();
-      return;
-    }
-
-    const next = colorFromPickrInstance(color);
-    if (next) {
-      const refs = state.rowElements.get(pickrActiveRow.name);
-      if (refs) {
-        refs.textInput.value = next;
-      }
-      await applyRowValue(pickrActiveRow.name, next, true);
-    }
-    pickr.hide();
-    pickrActiveRow = null;
-  });
-
-  pickr.on("clear", async () => {
-    if (!pickrActiveRow) {
-      pickr.hide();
-      return;
-    }
-    const refs = state.rowElements.get(pickrActiveRow.name);
-    if (refs) {
-      refs.textInput.value = "";
-      refs.colorButton.style.removeProperty("--color-preview");
-    }
-    await applyRowValue(pickrActiveRow.name, "", true);
-    pickr.hide();
-    pickrActiveRow = null;
+  pickr.on("show", () => {
+    pickrPendingColor = null;
   });
 
   pickr.on("hide", () => {
@@ -996,6 +965,7 @@ function openPickrForRow(rowName, colorButton) {
 
   const color = resolveColorValue(refs.textInput.value) || refs.colorButton.dataset.color || "#ffffff";
   pickrActiveRow = { name: rowName };
+  pickrPendingColor = null;
   pickrOpening = true;
   setTimeout(() => {
     pickr.setColor(color);
@@ -1027,7 +997,8 @@ async function refreshScan({ deep, showLoading }) {
   }
 }
 
-function renderVarList() {
+function renderVarList(options = {}) {
+  const { resetScroll = false } = options;
   const rows = getFilteredRows();
   state.visibleRows = rows;
   buildResolverMap(rows);
@@ -1115,6 +1086,10 @@ function renderVarList() {
 
   refreshRowColorStates();
   updateMeta(rows.length);
+
+  if (resetScroll) {
+    els.varList.scrollTop = 0;
+  }
 }
 
 function updateMeta(visibleCount) {
@@ -1131,7 +1106,7 @@ function cycleFilterState(key) {
   state.filterStates[key] = FILTER_CYCLE[current];
   persistState();
   renderFilterButtons();
-  renderVarList();
+  renderVarList({ resetScroll: true });
 }
 
 function copyWithExecCommand(payload) {
@@ -1198,7 +1173,7 @@ async function resetLocalEdits() {
 function bindEvents() {
   els.searchInput.addEventListener("input", () => {
     persistState();
-    renderVarList();
+    renderVarList({ resetScroll: true });
   });
 
   els.refreshBtn.addEventListener("click", async () => {
@@ -1228,13 +1203,13 @@ function bindEvents() {
   els.selectedOnlyToggle.addEventListener("change", () => {
     state.showSelectedOnly = els.selectedOnlyToggle.checked;
     persistState();
-    renderVarList();
+    renderVarList({ resetScroll: true });
   });
 
   els.localModeToggle.addEventListener("change", () => {
     state.localEditMode = els.localModeToggle.checked;
     persistState();
-    renderVarList();
+    renderVarList({ resetScroll: true });
   });
 
   for (const button of els.filterButtons) {
