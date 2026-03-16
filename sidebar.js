@@ -1034,11 +1034,14 @@ function scrollListToTop() {
     return;
   }
   const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  list.scrollTop = 0;
   if (reduceMotion || typeof list.scrollTo !== "function") {
-    list.scrollTop = 0;
     return;
   }
   list.scrollTo({ top: 0, behavior: "smooth" });
+  requestAnimationFrame(() => {
+    list.scrollTop = 0;
+  });
 }
 
 function renderVarList(options = {}) {
